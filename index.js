@@ -87,6 +87,30 @@ async function main() {
     let browser;
     let pageMyLocation; // mylocation 페이지 하나만 필요
 
+    // --- 글로벌 종료 핸들러 설정 ---
+    // 이 핸들러들은 Ctrl+C (SIGINT), 프로세스 종료 (SIGTERM), 처리되지 않은 Promise 거부 (unhandledRejection) 시 호출됩니다.
+    // main 함수 내의 finally 블록과 함께, 브라우저가 확실히 닫히도록 하는 안전 장치입니다.
+    const cleanupAndExit = async (signal) => {
+        console.log(`\n${signal} 신호 수신. 브라우저 종료 및 스크립트 종료 시도...`);
+        if (browser && browser.isConnected()) {
+            try {
+                await browser.close();
+                console.log("Puppeteer 브라우저 정상 종료.");
+            } catch (e) {
+                console.error(`ERROR: 브라우저 종료 중 오류 발생: ${e.message}`);
+            }
+        }
+        process.exit(1); // 오류 코드로 종료
+    };
+
+    process.on('SIGINT', cleanupAndExit.bind(null, 'SIGINT'));
+    process.on('SIGTERM', cleanupAndExit.bind(null, 'SIGTERM'));
+    process.on('unhandledRejection', async (reason, promise) => {
+        console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+        await cleanupAndExit('UNHANDLED_REJECTION');
+    });
+    // ----------------------------
+
     try {
         const auth = await authorize();
         const sheets = google.sheets({ version: 'v4', auth });
@@ -142,6 +166,12 @@ async function main() {
                 myLocationScreenshotFileId = myLocationResult.screenshotFileId;
                 myLocationInfo = myLocationResult.locationInfo;
 
+                // myLocationInfo가 공백이거나 유효하지 않으면 '해외IP'로 기록
+                if (!myLocationInfo || typeof myLocationInfo !== 'string' || myLocationInfo.trim() === '' || myLocationInfo.includes('찾을 수 없습니다')) {
+                    console.log(`mylocation.co.kr에서 ${ipAddress}에 대한 주소 검색 결과가 없습니다. '해외IP'로 기록합니다.`);
+                    myLocationInfo = '해외IP';
+                }
+
                 if (myLocationScreenshotFileId) {
                     console.log(`mylocation.co.kr 스크린샷 파일이 Google Drive에 업로드되었습니다. 파일 ID: ${myLocationScreenshotFileId}`); // 메시지 변경
                 } else {
@@ -162,7 +192,7 @@ async function main() {
                     valueInputOption: 'RAW',
                     resource: {
                         values: [[
-                            myLocationInfo || '', // I열
+                            myLocationInfo, // I열: 이제 '해외IP' 또는 실제 주소
                             '' // J열 (성공 시는 빈 값)
                         ]],
                     },
@@ -186,18 +216,9 @@ async function main() {
                 });
                 console.log(`스프레드시트 ${errorRangeJ} 오류 메시지 기록 완료.`);
 
-                // Puppeteer 관련 치명적인 오류 발생 시 브라우저를 닫고 전체 스크립트를 종료
-                if (pageMyLocation && !pageMyLocation.isClosed()) {
-                    try {
-                        await pageMyLocation.close();
-                        console.log(`현재 mylocation.co.kr 페이지 닫힘 (오류 발생).`);
-                    } catch (closePageErr) {
-                        console.warn(`WARN: 현재 페이지 닫기 실패 (오류: ${closePageErr.message})`);
-                    }
-                }
-
+                // Puppeteer 관련 치명적인 오류 발생 시 브라우저를 닫고 전체 스크립트를 즉시 종료
                 if (err.message.includes('Protocol error') || err.message.includes('No target with given id found') || err.message.includes('Attempted to use detached Frame') || err.message.includes('Execution context was destroyed') || err.message.includes('Navigating frame was detached')) {
-                    console.error("치명적인 Puppeteer 오류 발생. 남은 절차를 중단합니다.");
+                    console.error("치명적인 Puppeteer 오류 발생. 스크립트를 즉시 중단합니다."); // 메시지 변경
                     if (browser) {
                         try {
                             const pages = await browser.pages();
@@ -214,15 +235,27 @@ async function main() {
                     }
                     return; // main 함수를 여기서 종료하여 전체 스크립트 실행을 멈춥니다.
                 }
+
+                // 일반 오류의 경우, 현재 페이지를 닫으려고 시도하고 다음 IP로 진행 (이전 로직 유지)
+                if (pageMyLocation && !pageMyLocation.isClosed()) {
+                    try {
+                        await pageMyLocation.close();
+                        console.log(`현재 mylocation.co.kr 페이지 닫힘 (오류 발생).`);
+                    } catch (closePageErr) {
+                        console.warn(`WARN: 현재 페이지 닫기 실패 (오류: ${closePageErr.message})`);
+                    }
+                }
             } finally {
-                // 페이지 객체가 혹시라도 닫히지 않았다면 이 부분에서 다시 시도 (선택적)
-                // 현재 try 블록 내에서 명시적으로 pageMyLocation.close()를 호출하고 있으므로 이 finally 블록은 간소화
+                // 이 finally 블록은 현재 IP 처리 try/catch에 대한 것이며,
+                // 페이지 닫기 로직은 위에 catch 블록에서 처리되었으므로 여기서는 추가 작업이 필요 없습니다.
             }
         }
     } catch (error) {
         console.error("메인 자동화 프로세스 실패:", error);
+        // 최상위 예외는 글로벌 unhandledRejection 핸들러나 아래 finally 블록에서 브라우저 종료를 시도할 것입니다.
     } finally {
-        // Puppeteer 브라우저가 아직 열려있다면 종료합니다.
+        // Puppeteer 브라우저가 아직 열려있고 연결되어 있다면 종료합니다.
+        // 이는 최상위 오류나 모든 IP 처리가 완료된 후에도 브라우저를 확실히 닫는 역할을 합니다.
         if (browser && browser.isConnected()) {
             try {
                 await browser.close();
