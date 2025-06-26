@@ -136,7 +136,7 @@ async function main() {
             return;
         }
 
-        browser = await puppeteer.launch({ headless: false }); // 브라우저가 보이도록 headless: false 설정
+        browser = await puppeteer.launch({ headless: 'new' }); // 브라우저가 보이도록 headless: false 설정
         console.log("Puppeteer 브라우저 초기화 완료.");
         
         // I열(MYLOCATION_ADDRESS_COLUMN_INDEX)이 공백인 첫 번째 행을 찾는 로직은 제거하고,
@@ -173,6 +173,12 @@ async function main() {
                 const myLocationResult = await automateMyLocation(pageMyLocation, ipAddress, drive, config.SCREENSHOT_FOLDER_ID);
                 myLocationScreenshotFileId = myLocationResult.screenshotFileId;
                 myLocationInfo = myLocationResult.locationInfo;
+
+                // '경기'를 '경기도'로 변경하는 로직 추가
+                if (myLocationInfo === '경기') {
+                    myLocationInfo = '경기도';
+                    console.log(`'경기'를 '경기도'로 변경했습니다.`);
+                }
 
                 // myLocationInfo가 공백이거나 유효하지 않으면 '해외IP'로 기록
                 if (!myLocationInfo || typeof myLocationInfo !== 'string' || myLocationInfo.trim() === '' || myLocationInfo.includes('찾을 수 없습니다')) {
