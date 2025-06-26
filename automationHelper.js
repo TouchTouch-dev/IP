@@ -2,23 +2,13 @@
 
 const path = require('path');
 const fs = require('fs');
-const moment = require('moment'); // 날짜 포맷팅을 위해 moment.js 사용
+const moment = require('moment');
 
-// --- 첫 번째 자동화 대상 웹사이트 설정 변수 (KISA WHOIS 서비스) ---
-const TARGET_URL_KISA = 'https://xn--c79as89aj0e29b77z.xn--3e0b707e/kor/whois/whois.jsp'; // KISA WHOIS 주소
-const IP_INPUT_SELECTOR_KISA = '#sWord'; // KISA WHOIS IP 입력 필드 셀렉터
-const SUBMIT_BUTTON_SELECTOR_KISA = 'a[href="javascript:whois();"]'; // KISA WHOIS 제출 버튼 셀렉터
-
-
-// --- 두 번째 자동화 대상 웹사이트 설정 변수 (mylocation.co.kr) ---
-const TARGET_URL_MYLOCATION = 'https://www.mylocation.co.kr/'; // mylocation.co.kr URL
-const IP_INPUT_SELECTOR_MYLOCATION = '#txtAddr'; // mylocation.co.kr IP 입력 필드 셀렉터
-const SUBMIT_BUTTON_SELECTOR_MYLOCATION = '#btnAddr2'; // mylocation.co.kr 제출 버튼 셀렉터
-const MYLOCATION_ADDRESS_SELECTOR = '#lbAddr'; // mylocation.co.kr에서 주소 텍스트를 포함하는 요소의 셀렉터.
+// 설정 파일(config.js) 불러오기
+const config = require('./config');
 
 // 스크린샷 임시 저장 폴더 경로 설정
-const TEMP_SCREENSHOT_DIR = path.join(__dirname, 'tempscreenshot');
-
+const TEMP_SCREENSHOT_DIR = path.join(__dirname, config.TEMP_SCREENSHOT_DIR_NAME);
 
 /**
  * 주어진 페이지에서 스크린샷을 찍고 Google Drive에 업로드합니다.
@@ -26,97 +16,57 @@ const TEMP_SCREENSHOT_DIR = path.join(__dirname, 'tempscreenshot');
  * @param {string} ipAddress 현재 처리 중인 IP 주소
  * @param {object} drive Google Drive API 클라이언트
  * @param {string} folderId 이미지를 저장할 Google Drive 폴더 ID
- * @param {string} screenshotNameType 스크린샷 파일명 유형 ('whois' 또는 'mylocation')
+ * @param {string} screenshotNameType 스크린샷 파일명 유형 ('mylocation' 또는 'mylocation_error')
  * @returns {Promise<string|null>} 업로드된 파일의 ID, 또는 실패 시 null
  */
 async function takeScreenshotAndUpload(page, ipAddress, drive, folderId, screenshotNameType) {
-    // 임시 스크린샷 폴더가 없으면 생성
     if (!fs.existsSync(TEMP_SCREENSHOT_DIR)) {
         fs.mkdirSync(TEMP_SCREENSHOT_DIR, { recursive: true });
         console.log(`임시 스크린샷 폴더 생성: ${TEMP_SCREENSHOT_DIR}`);
     }
 
     const timestamp = moment().format('YYYYMMDD_HHmmss');
-    const screenshotFileName = `${screenshotNameType}_${ipAddress.replace(/\./g, '_')}_${timestamp}.png`;
-    const screenshotPath = path.join(TEMP_SCREENSHOT_DIR, screenshotFileName);
+    const filename = `${ipAddress.replace(/\./g, '_')}_${screenshotNameType}_${timestamp}.png`;
+    const filepath = path.join(TEMP_SCREENSHOT_DIR, filename);
 
     try {
-        await page.screenshot({ path: screenshotPath, fullPage: true });
-        console.log(`스크린샷 임시 저장 완료: ${screenshotPath}`);
+        await page.screenshot({ path: filepath, fullPage: true });
+        console.log(`스크린샷 저장: ${filepath}`);
 
         const fileMetadata = {
-            'name': screenshotFileName,
-            'parents': [folderId],
+            name: filename,
+            parents: [folderId],
+            mimeType: 'image/png',
         };
         const media = {
             mimeType: 'image/png',
-            body: fs.createReadStream(screenshotPath),
+            body: fs.createReadStream(filepath),
         };
 
-        const driveResponse = await drive.files.create({
+        const response = await drive.files.create({
             resource: fileMetadata,
             media: media,
-            fields: 'id, webViewLink',
+            fields: 'id,webViewLink',
         });
+        console.log(`Google Drive에 스크린샷 업로드 완료. 파일 ID: ${response.data.id}`);
 
-        console.log(`Google Drive에 '${screenshotNameType}' 스크린샷 업로드 완료. 파일 ID: ${driveResponse.data.id}`);
-        // 로컬에 저장된 스크린샷 파일 삭제 (선택 사항)
-        fs.unlinkSync(screenshotPath);
-        console.log(`로컬 임시 스크린샷 파일 삭제 완료: ${screenshotPath}`);
-        return driveResponse.data.id;
-    } catch (error) {
-        console.error(`ERROR: 스크린샷 촬영 및 Google Drive 업로드 실패 (${screenshotNameType}):`, error);
-        if (fs.existsSync(screenshotPath)) {
-            fs.unlinkSync(screenshotPath);
-            console.log(`오류 발생 후 로컬 임시 스크린샷 파일 정리 완료: ${screenshotPath}`);
+        // 업로드 후 임시 파일 삭제
+        fs.unlinkSync(filepath);
+        console.log(`임시 스크린샷 파일 삭제: ${filepath}`);
+
+        return response.data.id;
+    } catch (uploadError) {
+        console.error(`ERROR: 스크린샷 업로드 또는 임시 파일 삭제 중 오류 발생:`, uploadError);
+        // 오류가 발생해도 임시 파일이 남아있을 수 있으므로 시도
+        if (fs.existsSync(filepath)) {
+            try {
+                fs.unlinkSync(filepath);
+                console.warn(`WARN: 오류 발생 후 임시 스크린샷 파일 정리: ${filepath}`);
+            } catch (unlinkError) {
+                console.warn(`WARN: 오류 발생 후 임시 파일 정리 실패: ${unlinkError.message}`);
+            }
         }
         return null;
-    }
-}
-
-
-/**
- * KISA WHOIS 서비스에서 IP 주소를 조회하고 스크린샷을 찍습니다.
- * '국내에서 관리되는 IP가 아닙니다.' 또는 '잘 남았어' 문구 감지 로직 추가.
- * @param {Page} page Puppeteer 페이지 객체
- * @param {string} ipAddress 조회할 IP 주소
- * @param {object} drive Google Drive API 클라이언트
- * @param {string} folderId 이미지를 저장할 Google Drive 폴더 ID
- * @returns {Promise<{screenshotFileId: string|null, kisaResultStatus: string}>} KISA WHOIS 스크린샷 파일 ID 및 결과 상태 ('정상', '해외', '모바일', '오류')
- */
-async function automateKisaWhois(page, ipAddress, drive, folderId) {
-    console.log(`KISA WHOIS 자동화 시작: ${ipAddress}`);
-    let kisaResultStatus = '정상';
-    let screenshotFileId = null;
-
-    try {
-        await page.goto(TARGET_URL_KISA, { waitUntil: 'networkidle0', timeout: 60000 });
-        await page.waitForSelector(IP_INPUT_SELECTOR_KISA, { timeout: 10000 });
-        await page.type(IP_INPUT_SELECTOR_KISA, ipAddress);
-
-        await Promise.all([
-            page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 60000 }),
-            page.click(SUBMIT_BUTTON_SELECTOR_KISA),
-        ]);
-
-        console.log(`KISA WHOIS 결과 페이지 로딩 후 3초 대기...`);
-        await new Promise(resolve => setTimeout(resolve, 3000));
-
-        const pageContent = await page.content(); // 페이지의 전체 HTML을 가져옵니다.
-
-        // '국내에서 관리되는 IP가 아닙니다.' 또는 '잘 남았어' 문구 감지
-        if (pageContent.includes('국내에서 관리되는 IP가 아닙니다.') || pageContent.includes('잘 남았어')) {
-            console.log(`KISA WHOIS에서 '국내에서 관리되는 IP가 아닙니다.' 또는 '잘 남았어' 문구 감지. 해외 IP로 처리.`);
-            kisaResultStatus = '해외';
-        }
-        // 이 외에 KISA WHOIS 결과에 따라 '모바일' 등으로 판단하는 로직이 필요하다면 여기에 추가
-
-        screenshotFileId = await takeScreenshotAndUpload(page, ipAddress, drive, folderId, 'whois_kisa');
-        return { screenshotFileId, kisaResultStatus };
-    } catch (error) {
-        console.error(`ERROR: KISA WHOIS 자동화 중 오류 발생 (${ipAddress}):`, error);
-        kisaResultStatus = '오류';
-        throw error; // 오류를 다시 던져서 main 함수에서 처리할 수 있도록 합니다.
     }
 }
 
@@ -132,71 +82,87 @@ async function automateKisaWhois(page, ipAddress, drive, folderId) {
 async function automateMyLocation(page, ipAddress, drive, folderId) {
     console.log(`mylocation.co.kr 자동화 시작: ${ipAddress}`);
     let locationInfo = null;
+    let screenshotFileId = null;
     try {
-        await page.goto(TARGET_URL_MYLOCATION, { waitUntil: 'networkidle0', timeout: 60000 });
+        // 1. mylocation.co.kr 창 열기
+        await page.goto(config.TARGET_URL_MYLOCATION, { waitUntil: 'networkidle0', timeout: 60000 });
         
-        console.log(`mylocation.co.kr 페이지 로드 후 5초 대기...`);
+        // 2. 초기 페이지 로딩 및 팝업 대기를 위해 충분히 대기 (1초 -> 5초 복원)
+        console.log('mylocation.co.kr 사이트 초기화를 위해 5초 대기...');
         await new Promise(resolve => setTimeout(resolve, 5000));
+        
+        // 팝업창 처리 로직: '닫기' 버튼이 있는지 확인하고 클릭 시도
+        try {
+            await page.waitForSelector(config.POPUP_CLOSE_BUTTON_SELECTOR, { timeout: 5000, visible: true });
+            console.log('팝업창 "닫기" 버튼 발견. 클릭하여 닫기 시도...');
+            await page.click(config.POPUP_CLOSE_BUTTON_SELECTOR);
+            console.log('팝업창 닫기 버튼 클릭 완료.');
+            await new Promise(resolve => setTimeout(resolve, 1000)); // 팝업 닫힌 후 안정화 대기
+        } catch (e) {
+            console.log('팝업창 "닫기" 버튼을 찾을 수 없거나 팝업이 나타나지 않음. (정상 케이스)');
+        }
 
-        await page.waitForSelector(IP_INPUT_SELECTOR_MYLOCATION, { timeout: 10000 });
-        await page.type(IP_INPUT_SELECTOR_MYLOCATION, ipAddress);
+        // IP 입력 필드 확인 및 입력 (재도입)
+        await page.waitForSelector(config.IP_INPUT_SELECTOR_MYLOCATION, { visible: true, timeout: 10000 });
+        console.log(`mylocation.co.kr IP 입력 필드 확인 완료.`);
+        
+        // 입력 필드 초기화 (기존 값 삭제)
+        await page.evaluate(selector => {
+            const input = document.querySelector(selector);
+            if (input) {
+                input.value = '';
+            }
+        }, config.IP_INPUT_SELECTOR_MYLOCATION);
+        
+        // 3. IP 넣기
+        await page.type(config.IP_INPUT_SELECTOR_MYLOCATION, ipAddress);
+        console.log(`IP 주소 입력 완료.`);
 
-        console.log(`IP 주소 입력 후 5초 대기...`);
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        // 주소 검색 버튼 확인 (재도입)
+        await page.waitForSelector(config.SUBMIT_BUTTON_SELECTOR_MYLOCATION, { visible: true, timeout: 10000 });
+        console.log(`mylocation.co.kr 제출 버튼 확인 완료.`);
 
-        await page.click(SUBMIT_BUTTON_SELECTOR_MYLOCATION);
+        // 버튼 클릭 전에 1초 딜레이
+        console.log(`버튼 클릭 전 1초 대기...`);
+        await new Promise(resolve => setTimeout(resolve, 1000)); // 1000ms = 1초
 
-        console.log(`주소 검색 버튼 클릭 후 5초 대기...`);
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        // 4. 주소검색 누르기 (클릭) - 페이지 탐색을 기다립니다.
+        await Promise.all([
+            page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 60000 }), // 페이지 탐색을 기다립니다.
+            page.evaluate(selector => { // JavaScript 클릭 사용 (더 안정적)
+                document.querySelector(selector).click();
+            }, config.SUBMIT_BUTTON_SELECTOR_MYLOCATION)
+        ]);
+        console.log(`mylocation.co.kr 주소 검색 버튼 클릭 완료 및 탐색 대기 완료.`);
 
-        // 결과 로딩 대기. 주소 정보가 나타날 때까지 기다립니다.
-        // 대기 시간을 60초로 늘립니다.
-        await page.waitForSelector(MYLOCATION_ADDRESS_SELECTOR, { timeout: 60000 }); // 대기 시간 60초로 변경
-        console.log(`mylocation.co.kr 결과 페이지 로드 완료.`);
+        // 5. 추가 대기 (2초) (재도입)
+        console.log(`mylocation.co.kr 검색 결과 요소 로드 대기를 위해 추가 2초 대기...`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
 
-        locationInfo = await page.$eval(MYLOCATION_ADDRESS_SELECTOR, el => el.textContent.trim());
+        // 주소 정보 요소 확인 및 결과값 받기 (재도입)
+        await page.waitForSelector(config.MYLOCATION_ADDRESS_SELECTOR, { timeout: 60000 });
+        console.log(`mylocation.co.kr 주소 정보 요소 확인 완료.`);
+        
+        // 추가 대기 (최종 결과값 받기 전)
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // 6. 결과값 받아서
+        locationInfo = await page.$eval(config.MYLOCATION_ADDRESS_SELECTOR, el => el.textContent.trim());
         console.log(`mylocation.co.kr 위치 정보: ${locationInfo}`);
 
-        const screenshotFileId = await takeScreenshotAndUpload(page, ipAddress, drive, folderId, 'mylocation');
+        // 스크린샷 찍고 업로드 (Google Drive 폴더 ID 사용)
+        screenshotFileId = await takeScreenshotAndUpload(page, ipAddress, drive, folderId, 'mylocation');
         return { screenshotFileId, locationInfo };
     } catch (error) {
         console.error(`ERROR: mylocation.co.kr 자동화 중 오류 발생 (${ipAddress}):`, error);
-        throw error; // 오류를 다시 던져서 main 함수에서 처리할 수 있도록 합니다.
-    }
-}
-
-
-/**
- * Google Sheets에서 경찰서 정보를 가져옵니다.
- * @param {object} sheets Google Sheets API 클라이언트
- * @param {string} spreadsheetId 스프레드시트 ID
- * @param {string} dbSheetName DB 시트 이름
- * @param {string} dbRange DB 시트 범위
- * @returns {Promise<Array<Array<string>>>} 경찰서 정보 배열
- */
-async function getPoliceStation(sheets, spreadsheetId, dbSheetName, dbRange) {
-    console.log(`경찰서 정보 조회 시작: 시트 '${dbSheetName}', 범위 '${dbRange}'`);
-    try {
-        const response = await sheets.spreadsheets.values.get({
-            spreadsheetId: spreadsheetId,
-            range: `${dbSheetName}!${dbRange}`,
+        screenshotFileId = await takeScreenshotAndUpload(page, ipAddress, drive, folderId, 'mylocation_error').catch(e => {
+            console.warn(`WARN: 오류 발생 시 mylocation 스크린샷 찍기 실패: ${e.message}`);
+            return null;
         });
-        const rows = response.data.values;
-        if (!rows || rows.length === 0) {
-            console.log('경찰서 정보를 찾을 수 없습니다.');
-            return [];
-        }
-        console.log(`경찰서 정보 ${rows.length}개 로드 완료.`);
-        return rows;
-    } catch (error) {
-        console.error('ERROR: 경찰서 정보를 가져오는 중 오류 발생:', error);
-        throw error;
+        return { screenshotFileId, locationInfo: `오류 발생: ${error.message}` };
     }
 }
-
 
 module.exports = {
-    automateKisaWhois,
     automateMyLocation,
-    getPoliceStation,
 };
