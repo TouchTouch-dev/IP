@@ -73,6 +73,14 @@ async function getNewToken(oAuth2Client) {
                 console.log('Token stored to', TOKEN_PATH); // TOKEN_PATH 사용
                 resolve();
             } catch (err) {
+                // getNewToken 과정에서 invalid_grant가 발생하면, 새로 발급받으려던 토큰이 문제
+                if (err.response && err.response.data && err.response.data.error === 'invalid_grant') {
+                    console.error('\n\n🚨 오류: Google API 재인증이 필요합니다.');
+                    console.error('이 오류는 기존 인증 토큰이 만료되었거나 취소되었을 때 발생합니다.');
+                    console.error(`"${config.TOKEN_FILE_NAME}" 파일을 삭제하고 스크립트를 다시 실행해주세요.`);
+                    console.error(`파일 경로: ${TOKEN_PATH}`);
+                    process.exit(1); // 스크립트 종료
+                }
                 console.error('Error retrieving access token', err);
                 reject(err);
             }
@@ -251,7 +259,16 @@ async function main() {
             }
         }
     } catch (error) {
-        console.error("메인 자동화 프로세스 실패:", error);
+        // 최상위 예외 처리 (여기서 invalid_grant와 같은 API 인증 오류를 주로 잡음)
+        if (error.response && error.response.data && error.response.data.error === 'invalid_grant') {
+            console.error('\n\n🚨 오류: Google API 재인증이 필요합니다.');
+            console.error('이 오류는 기존 인증 토큰이 만료되었거나 취소되었을 때 발생합니다.');
+            console.error(`"${config.TOKEN_FILE_NAME}" 파일을 삭제하고 스크립트를 다시 실행해주세요.`);
+            console.error(`파일 경로: ${TOKEN_PATH}`);
+            process.exit(1); // 스크립트 종료
+        } else {
+            console.error("메인 자동화 프로세스 실패:", error);
+        }
         // 최상위 예외는 글로벌 unhandledRejection 핸들러나 아래 finally 블록에서 브라우저 종료를 시도할 것입니다.
     } finally {
         // Puppeteer 브라우저가 아직 열려있고 연결되어 있다면 종료합니다.
