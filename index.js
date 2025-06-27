@@ -182,8 +182,8 @@ async function main() {
 
                 // myLocationInfo가 공백이거나 유효하지 않으면 '해외IP'로 기록
                 if (!myLocationInfo || typeof myLocationInfo !== 'string' || myLocationInfo.trim() === '' || myLocationInfo.includes('찾을 수 없습니다')) {
-                    console.log(`mylocation.co.kr에서 ${ipAddress}에 대한 주소 검색 결과가 없습니다. '해외IP'로 기록합니다.`);
-                    myLocationInfo = '해외IP';
+                    console.log(`mylocation.co.kr에서 ${ipAddress}에 대한 주소 검색 결과가 없습니다. '국내에서 관리되는 IP가 아닙니다.'로 기록합니다.`);
+                    myLocationInfo = '국내에서 관리되는 IP가 아닙니다.';
                 }
 
                 if (myLocationScreenshotFileId) {
